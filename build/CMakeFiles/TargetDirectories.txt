@@ -1,3 +1,0 @@
-/home/chrinovic/Workspace/Projects/InstraX/build/CMakeFiles/instrax.dir
-/home/chrinovic/Workspace/Projects/InstraX/build/CMakeFiles/edit_cache.dir
-/home/chrinovic/Workspace/Projects/InstraX/build/CMakeFiles/rebuild_cache.dir
