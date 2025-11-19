@@ -3,6 +3,6 @@
 
 namespace Disasm {
 
-void dumoX86_64(const ElfLoad:ElfLoadResult & elf); 
+void dumpX86_64(const ElfLoad::ElfLoadResult & elf); 
 
 }

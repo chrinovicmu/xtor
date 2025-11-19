@@ -1,9 +1,9 @@
 #include "ELFLoader.hpp"
 #include <iostream>
 
-namespace ElfLoader {
+namespace ElfLoad {
 
-std::optional<ElfLoaderResult> loadELfFile(const std::filesystem::path& path){
+std::optional<ElfLoad::ElfLoadResult> loadElfFile(const std::filesystem::path& path){
 
     /*elfio reader object */ 
     ELFIO::elfio reader; 
@@ -14,23 +14,23 @@ std::optional<ElfLoaderResult> loadELfFile(const std::filesystem::path& path){
         return std::nullopt; 
     }
 
-    ElfLoadResult result; 
+    ElfLoad::ElfLoadResult result; 
     result.path = path.string(); 
     result.entry = reader.get_entry(); 
-    result.is64Bit = (reader.get_class() = ELFCLASS64);
-    result.littleEndian = (reader.get_encoding() == ELFDATA2LSB); 
+    result.is64Bit = (reader.get_class() == ELFIO::ELFCLASS64);
+    result.littleEndian = (reader.get_encoding() == ELFIO::ELFDATA2LSB); 
 
     /*interate though all program segments */ 
-    for(const auto& seg : reader.segments()){
+    for(const auto& seg : reader.segments){
 
         /*process only loadable segements */ 
-        if(seg->get_type() != PT_LOAD) 
+        if(seg->get_type() != ELFIO::PT_LOAD) 
             continue;
 
-        result.phdrAddr.push_back(seg->get_virtual_address()); 
+        result.phdrAddrs.push_back(seg->get_virtual_address()); 
 
         /*if segment is executbale, treat it as .text sgement */ 
-        if(seg->get_flags() & PF_X){
+        if(seg->get_flags() & ELFIO::PF_X){
             result.textAddr = seg->get_virtual_address();
             result.textSize = seg->get_file_size(); 
 
@@ -41,7 +41,7 @@ std::optional<ElfLoaderResult> loadELfFile(const std::filesystem::path& path){
         }
 
         /*if segment os writable, treat it as .data segment */ 
-        if(seg->get_flags() & PF_W){
+        if(seg->get_flags() & ELFIO::PF_W){
             result.dataAddr = seg->get_virtual_address();
             result.dataSize = seg->get_file_size(); 
 
@@ -55,13 +55,13 @@ std::optional<ElfLoaderResult> loadELfFile(const std::filesystem::path& path){
     }
 
     /* iterate through all sections in the ELF file and store their virtual addresses */ 
-    for (const auto& sec : reader.sections())
+    for (const auto& sec : reader.sections)
         result.shdrAddrs.push_back(sec->get_address());
 
     /* mark the result as successfully loaded if the text segment exists */ 
     result.loaded = !result.text.empty();
 
     return result.loaded ? std::make_optional(result) : std::nullopt;
-}
 
+}
 }

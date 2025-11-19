@@ -6,7 +6,7 @@
 
 namespace Disasm {
 
-void dumppX86_64(const ElfLoad::ElfLoadResult & elf)
+void dumpX86_64(const ElfLoad::ElfLoadResult & elf)
 {
     if(!elf.hasText()){
         std::cerr << "no .text segement available\n"; 
@@ -33,7 +33,7 @@ void dumppX86_64(const ElfLoad::ElfLoadResult & elf)
     //  - &insn: output pointer where Capstone writes the decoded array
 
     size_t count = cs_disasm(
-        csh handle, 
+        handle, 
         elf.text.data(), 
         elf.text.size(), 
         elf.textAddr, 
