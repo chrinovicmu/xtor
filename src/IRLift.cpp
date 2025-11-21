@@ -1,10 +1,49 @@
 #include <capstone/capstone.h>
+#include <capstone/x86.h>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
 #include <vector>
 #include "XR2_IR.hpp" 
 #include "ELFLoader.hpp"
+#include "utils.hpp"
+
+MyIR::Opcode decodeMnemonic(const std::string& mnem) {
+
+    switch (fnv1a(mnem.c_str())) {
+
+        case fnv1a("mov"):  
+            return MyIR::Opcode::MOV;
+        case fnv1a("add"):  
+            return MyIR::Opcode::ADD;
+        case fnv1a("sub"):  
+            return MyIR::Opcode::SUB;
+        case fnv1a("mul"):  
+            return MyIR::Opcode::MUL;
+        case fnv1a("div"):  
+            return MyIR::Opcode::DIV;
+
+        case fnv1a("ldr"):
+        case fnv1a("load"): 
+            return MyIR::Opcode::LOAD;
+
+        case fnv1a("str"):
+        case fnv1a("store"): 
+            return MyIR::Opcode::STORE;
+
+        case fnv1a("jmp"):  
+            return MyIR::Opcode::JMP;
+
+        case fnv1a("jz"):
+        case fnv1a("jnz"):
+        case fnv1a("je"):
+        case fnv1a("jne"):  
+            return MyIR::Opcode::CJMP;
+
+        default:            
+            return MyIR::Opcode::NOP;
+    }
+}
 
 X2R_IR::IRProgram liftX86ToIR(cont ElfLoad::ElfLoadResult& elf){
 
@@ -43,29 +82,120 @@ X2R_IR::IRProgram liftX86ToIR(cont ElfLoad::ElfLoadResult& elf){
             /*map capstone mnemonic to IR opcode */ 
             std::string mnem = ci.mnemonic;
 
-                        
-            if (mnem == "mov") 
-                irInst.opcode = MyIR::Opcode::MOV;
-            else if (mnem == "add") 
-                irInst.opcode = MyIR::Opcode::ADD;
-            else if (mnem == "sub") 
-                irInst.opcode = MyIR::Opcode::SUB;
-            else if (mnem == "mul") 
-                irInst.opcode = MyIR::Opcode::MUL;
-            else if (mnem == "div") 
-                irInst.opcode = MyIR::Opcode::DIV;
-            else if (mnem == "ldr" || mnem == "load") // depending on architecture
-                irInst.opcode = MyIR::Opcode::LOAD;
-            else if (mnem == "str" || mnem == "store")
-                irInst.opcode = MyIR::Opcode::STORE;
-            else if (mnem == "jmp") 
-                irInst.opcode = MyIR::Opcode::JMP;
-            else if (mnem == "jz" || mnem == "jnz" || mnem == "je" || mnem == "jne") 
-                irInst.opcode = MyIR::Opcode::CJMP;
-            else 
-                irInst.opcode = MyIR::Opcode::NOP; // fallback for unsupported instructions
+            irInst.opcode = decodeMnemonic(mnem); 
 
+            /*handling operands 
+             * capstonme stores operands in ci.details->x86.oprands array */ 
+
+            /*destinatino operand (first operand) */ 
+            if (ci.detail->x86.op_count >= 1) {
+
+                const auto& op = ci.detail->x86.operands[0];
+
+                switch (op.type) {
+
+                    case X86_OP_REG:
+
+                        irInst.dst = X2R_IR::Operand{
+                            X2R_IR::OperandType::Register,
+                            cs_reg_name(handle, op.reg),
+                            0,
+                            0
+                        };
+                        break;
+
+                    case X86_OP_IMM:
+
+                        irInst.dst = X2R_IR::Operand{
+                            X2R_IR::OperandType::Immediate,
+                            "",
+                            op.imm,
+                            0
+                        };
+                        break;
+
+                    case X86_OP_MEM:
+
+                        irInst.dst = X2R_IR::Operand{
+                            X2R_IR::OperandType::Memory,
+                            "",
+                            0,
+                            op.mem.disp
+                        };
+                        break;
+
+                    default:
+
+                        /* fallback (unsupported operand type) */ 
+                        irInst.dst = X2R_IR::Operand{
+                            X2R_IR::OperandType::None,
+                            "",
+                            0,
+                            0
+                        };
+
+                        break;
+                }
+            }
+
+            if(ci.detail->x86.op_count >= 2){
+
+                const auto& op = ci.detail->x86.operands[1]; 
+
+                switch(op.type == X86_OP_REG){
+
+                    case X86_OP_REG:
+
+                        irInst.src = X2R_IR::Operand{
+                            X2R_IR::OperandType::Register, 
+                            cs_reg_name(handle, op.reg), 
+                            0, 
+                            0
+                            }; 
+                        break;
+
+                    case X86_OP_IMM:
+
+                        irInst.src = X2R_IR::Operand{
+                            X2R_IR::OperandType::Immediate,
+                            "",
+                            op.imm, 
+                            0
+                        }; 
+                        break; 
+
+                    case X86_OP_MEM:
+                    
+                        irInst.src = X2R_IR::Operand{
+                            X2R_IR::OperandType::Memory, 
+                            "", 
+                            0, 
+                            op.mem.disp
+                        }; 
+                        break 
+
+                    default:
+                        irInst.src = X2R_IR::Operand{
+                            X2R_IR::OperandType::Memory, 
+                            "",
+                            0,
+                            0
+                        };  
+
+                        break; 
+                }
+            }
+
+            block.instructions.push_back(irInst); 
         }
+
+        func.blocks.push_back(block); 
     }
+    program.functions.push_back(func); 
+
+    cs_free(insn, count); 
+    cs_close(&handle); 
+
+    return program; 
 
 }
