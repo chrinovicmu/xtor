@@ -4,48 +4,51 @@
 #include <cstdint>
 #include <iostream>
 #include <vector>
-#include "XR2_IR.hpp" 
+#include "X2R_IR.hpp" 
 #include "ELFLoader.hpp"
 #include "utils.hpp"
 
-MyIR::Opcode decodeMnemonic(const std::string& mnem) {
+namespace X2R_IR {
+
+
+X2R_IR::Opcode decodeMnemonic(const std::string& mnem) {
 
     switch (fnv1a(mnem.c_str())) {
 
         case fnv1a("mov"):  
-            return MyIR::Opcode::MOV;
+            return X2R_IR::Opcode::MOV;
         case fnv1a("add"):  
-            return MyIR::Opcode::ADD;
+            return X2R_IR::Opcode::ADD;
         case fnv1a("sub"):  
-            return MyIR::Opcode::SUB;
+            return X2R_IR::Opcode::SUB;
         case fnv1a("mul"):  
-            return MyIR::Opcode::MUL;
+            return X2R_IR::Opcode::MUL;
         case fnv1a("div"):  
-            return MyIR::Opcode::DIV;
+            return X2R_IR::Opcode::DIV;
 
         case fnv1a("ldr"):
         case fnv1a("load"): 
-            return MyIR::Opcode::LOAD;
+            return X2R_IR::Opcode::LOAD;
 
         case fnv1a("str"):
         case fnv1a("store"): 
-            return MyIR::Opcode::STORE;
+            return X2R_IR::Opcode::STORE;
 
         case fnv1a("jmp"):  
-            return MyIR::Opcode::JMP;
+            return X2R_IR::Opcode::JMP;
 
         case fnv1a("jz"):
         case fnv1a("jnz"):
         case fnv1a("je"):
         case fnv1a("jne"):  
-            return MyIR::Opcode::CJMP;
+            return X2R_IR::Opcode::CJMP;
 
         default:            
-            return MyIR::Opcode::NOP;
+            return X2R_IR::Opcode::NOP;
     }
 }
 
-X2R_IR::IRProgram liftX86ToIR(cont ElfLoad::ElfLoadResult& elf){
+X2R_IR::IRProgram liftX86ToIR(const ElfLoad::ElfLoadResult& elf){
 
     csh handle; 
     cs_insn *insn;
@@ -62,6 +65,9 @@ X2R_IR::IRProgram liftX86ToIR(cont ElfLoad::ElfLoadResult& elf){
         return program;
     }
 
+    /*enable detail mode */ 
+    cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON); 
+
     // disassemble the .text section of the ELF
     // elf.text.data() = pointer to raw machine code
     // elf.text.size() = size of .text section
@@ -77,7 +83,7 @@ X2R_IR::IRProgram liftX86ToIR(cont ElfLoad::ElfLoadResult& elf){
             X2R_IR::IRInst irInst; 
 
             /*reference to the current capstone instruction */ 
-            const auto& ci = insn[i]; 
+            const auto& ci = insn[x]; 
 
             /*map capstone mnemonic to IR opcode */ 
             std::string mnem = ci.mnemonic;
@@ -88,7 +94,7 @@ X2R_IR::IRProgram liftX86ToIR(cont ElfLoad::ElfLoadResult& elf){
              * capstonme stores operands in ci.details->x86.oprands array */ 
 
             /*destinatino operand (first operand) */ 
-            if (ci.detail->x86.op_count >= 1) {
+            if (ci.detail && ci.detail->x86.op_count >= 1) {
 
                 const auto& op = ci.detail->x86.operands[0];
 
@@ -142,7 +148,7 @@ X2R_IR::IRProgram liftX86ToIR(cont ElfLoad::ElfLoadResult& elf){
 
                 const auto& op = ci.detail->x86.operands[1]; 
 
-                switch(op.type == X86_OP_REG){
+                switch(op.type){
 
                     case X86_OP_REG:
 
@@ -172,7 +178,7 @@ X2R_IR::IRProgram liftX86ToIR(cont ElfLoad::ElfLoadResult& elf){
                             0, 
                             op.mem.disp
                         }; 
-                        break 
+                        break;  
 
                     default:
                         irInst.src = X2R_IR::Operand{
@@ -197,5 +203,86 @@ X2R_IR::IRProgram liftX86ToIR(cont ElfLoad::ElfLoadResult& elf){
     cs_close(&handle); 
 
     return program; 
+}
 
+void PrintIRInstr(const IRInst& instr) {
+
+    // --- opcode to string ---
+    std::string opcode;
+    switch (instr.opcode) {
+        case Opcode::MOV:   opcode = "mov"; break;
+        case Opcode::ADD:   opcode = "add"; break;
+        case Opcode::SUB:   opcode = "sub"; break;
+        case Opcode::MUL:   opcode = "mul"; break;
+        case Opcode::DIV:   opcode = "div"; break;
+        case Opcode::LOAD:  opcode = "ld";  break;
+        case Opcode::STORE: opcode = "st";  break;
+        case Opcode::JMP:   opcode = "jmp"; break;
+        case Opcode::CJMP:  opcode = "cjmp"; break;
+        case Opcode::NOP:   opcode = "nop"; break;
+    }
+
+    std::string dst;
+    switch (instr.dst.type) {
+        case OperandType::Register:
+            dst = instr.dst.regName;
+            break;
+        case OperandType::Immediate:
+            dst = std::to_string(instr.dst.imm);
+            break;
+        case OperandType::Memory:
+            dst = "[" + std::to_string(instr.dst.memAddr) + "]";
+            break;
+    }
+
+    std::string src;
+    if (instr.src.has_value()) {
+        const Operand& s = *instr.src;
+        switch (s.type) {
+            case OperandType::Register:
+                src = s.regName;
+                break;
+            case OperandType::Immediate:
+                src = std::to_string(s.imm);
+                break;
+            case OperandType::Memory:
+                src = "[" + std::to_string(s.memAddr) + "]";
+                break;
+        }
+    }
+
+    if (!instr.label.empty()) {
+        std::cout << instr.label << ":\n";
+    }
+
+    if (!src.empty())
+        std::cout << opcode << " " << src << ", " << dst << "\n";
+    else
+        std::cout << opcode << " " << dst << "\n";
+}
+
+void PrintIRFunction(const IRFunction& fn){
+
+    std::cout << "funtion " << fn.name << ":\n";
+
+    for(const auto& block : fn.blocks){
+        std::cout << "block " << block.name << "\n"; 
+
+        for(const auto& instr : block.instructions){
+            std::cout << "  "; 
+            PrintIRInstr(instr); 
+        }
+        std::cout << "\n"; 
+    }
+}
+
+void PrintIRProgram(const IRProgram& program) {
+
+    std::cout << "program:\n";
+
+    for (const auto& fn : program.functions) {
+        std::cout << "\n";
+        PrintIRFunction(fn);
+    }
+}
 }

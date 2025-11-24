@@ -9,14 +9,15 @@ set(SOURCES
     src/main.cpp
     src/disasm.cpp
     src/ELFLoader.cpp
+    src/IRLift.cpp
 )
 
 add_executable(instrax ${SOURCES})
 
-target_include_directories(x2r PRIVATE
+target_include_directories(instrax PRIVATE
     ${CMAKE_SOURCE_DIR}/include
-    ${CMAKE_SOURCE_DIR}/ELFIO
+    ${CMAKE_SOURCE_DIR}/utils
+    ${CMAKE_SOURCE_DIR}/ELFIO    # if you vendor ELFIO here
 )
 
-# Link Capstone
 target_link_libraries(instrax PRIVATE capstone)
