@@ -297,6 +297,205 @@ public:
     uint64_t sourceAddr() const { return ,_sourceAddr; }
     bool hasResult() const { return m_dst.has_value(); }
 
+    //these throw std::logic_error if instruction doesn't have the field 
 
-}
+    const VReg& dest() const; 
+    const std::vector<IRValue>& operands() const { return m_operands; }
+    const IRValue& operand(size_t i) const; 
+
+    const IcmpCond& icmpCond()    const;   // only valid for ICMP
+    const FcmpCond& fcmpCond()    const;   // only valid for FCMP
+    const std::string& branchTrue()  const;   // JMP / CJMP
+    const std::string& branchFalse() const;   // CJMP only
+
+    CallingConv callConv()    const;   // CALL only
+    bool        isTailCall()  const;   // CALL only
+
+    const MemFlags&  memFlags()    const;   // LOAD / STORE / ALLOCA
+    uint64_t         allocaBytes() const;   // ALLOCA only
+
+    void setSourceAddr(uint64_t addr) { m_sourceAddr = addr; }
+
+    std::string toString() const;
+
+private:
+
+    IRInst() = default;
+
+    Opcode m_opcode = Opcode::NOP; 
+    IRType m_resultType = IRType::void_(); 
+    uint64_t m_sourceAddr = 0; 
+
+    std::optinal<VReg> m_dst; 
+    std::vector<IRValue> m_operands; 
+
+    std::optional<IcmpCond>  m_icmpCond; 
+    std::optional<FcmpCond> m_fcmpCond;
+    std::string m_branchTrue; 
+    std::string m_branchFalse; 
+    std::optional<CallingConv> m_callConv; 
+    bool m_isTailCall = false; 
+    std::optional<uint64_t> m_allocaBytes; 
+}; 
+
+class IRBasicBlock{
+public:
+    explicit IRBasicBlock(std::string name, uint64_t startAddr =0)
+        : m_name(std::move(name)), m_startAddr(startAddr) {}
+
+    //observers 
+    const std::string& name() const { return m_name; }
+    uint64_t startAddr() const { return m_startAddr; }
+    const std::vector<std::string>& predecessors() const { return m_predecessors; }
+    const std::vector<std::string>& successors() const { return m_successors; }
+    const std::vector<IRInst>& instructions() const { return m_instructions; }
+
+    bool isTerminated() const; 
+    //return last instruction 
+    const IRInst& terminator() const; 
+
+    void pushInst(IRInst inst); 
+    void addPredecessor(std::string blockname); 
+    void addSuccessor(std::string blockname); 
+
+private:
+    std::string m_name; 
+    uint64_t m_startAddr; 
+    std::vector<std::string> m_predecessors; 
+    std::vector<std::string> m_successors; 
+    std::vector<IRInst> m_instructions; 
+}; 
+
+//IRParam 
+//One formal parameter of a function. Immuatable 
+// The parameter is simply pre-loaded into the corresponding GPR
+class IRParam{
+public:
+    IRParam(IRType type, std::name, uint32_t vregId) 
+        : m_type(type), m_name(std::move(name)), m_vregID(vregId) {}
+
+    const IRType&      type()   const { return m_type;   }
+    const std::string& name()   const { return m_name;   }
+    uint32_t           vregId() const { return m_vregId; }
+
+private:
+    IRType      m_type;
+    std::string m_name;
+    uint32_t    m_vregId;  // the SSA vreg that holds this param at entry
+}; 
+
+//IRFunction
+//Owns it's basic blocks and manages vreg ID allocation 
+
+class IRFunction{
+public:
+    IRFunction(std::string name, IRType returnType,
+               CallingConv cc = CallingConv::C)
+        :   m_name(std::move(name)), 
+            m_returnType(returnType); 
+            m_callingConv(cc), 
+            m_nextVregId(16) {} //IDs 0-15 reserved for GPR Vregs    
+
+    const std::string& name() const { return m_name; }
+    const IRType& returnType() const { return m_returnType;  }
+    CallingConv callingConv() const { return m_callingConv; }
+    bool isExternal() const { return m_isExternal;  }
+    bool isNoReturn() const { return m_isNoReturn;  }
+    const std::vector<IRParam>& params() const { return m_params; }
+    const std::vector<IRBasicBlock>& blocks() const { return m_blocks; }
+    std::vector<IRBasicBlock>& blocks() { return m_blocks; }
+
+    //Allocates a temporary VReg id (>16) 
+    uint32_t allocVreg() { return m_nextVregId++; }
+
+    void addParam(IRParam param) { m_params.push_back(std::move(param)); }
+    void addBlock(IRBasicBlock block) { m_blocks.push_back(std::move(block)); }
+    void setExternal(bool v) { m_isExternal = v; }
+    void setNoReturn(bool v) { m_isNoReturn = v; }
+
+    IRBasicBlock* findBlock(const std::string& name); 
+    const IRBasicBlock * findBlock(const std::string& name) const; 
+    const IRBasicBlock& entryBlock() const; 
+    IRBasicBlock& entryBlock();
+
+private: 
+    std::string m_name;
+    IRType m_returnType;
+    CallingConv m_callingConv;
+    bool m_isExternal  = false;
+    bool m_isNoReturn  = false;
+    std::vector<IRParam> m_params;
+    std::vector<IRBasicBlock> m_blocks;
+    uint32_t m_nextVregId;
+}; 
+
+// Global varaiblbes */ 
+class IRGlobal {
+public:
+    IRGlobal(std::string name, IRType type, uint64_t address,
+             bool isReadOnly, bool isZeroInit,
+             std::vector<uint8_t> initialBytes = {})
+        : m_name(std::move(name)), m_type(type), m_address(address),
+          m_isReadOnly(isReadOnly), m_isZeroInit(isZeroInit),
+          m_initialBytes(std::move(initialBytes)) {}
+
+    const std::string& name() const { return m_name;}
+    const IRType& type() const { return m_type; }
+    uint64_t address() const { return m_address;}
+    bool isReadOnly() const { return m_isReadOnly;}
+    bool isZeroInit() const { return m_isZeroInit;  }
+    const std::vector<uint8_t>& initialBytes() const { return m_initialBytes; }
+
+private:
+    std::string          m_name;
+    IRType               m_type;
+    uint64_t             m_address;
+    bool                 m_isReadOnly;
+    bool                 m_isZeroInit;
+    std::vector<uint8_t> m_initialBytes;
+};
+
+class IRProgram{
+public:
+    IRProgram() = default; 
+
+    const std::vector<IRGlobal>& globals() const { return m_globals; }
+    const std::vector<IRFunction>& functions() const { return m_functions; }
+    std::vector<IRFunction>& functions() { return m_functions; }
+
+    std::string symbolAt(uint64_t addr) const; 
+
+    void addGlobal(IRGlobal global);
+    void addFunction(IRFunction fn);
+    void registerSymbol(uint64_t addr, std::string name);
+
+    IRFunction* findFunction(const std::string& name);
+    const IRFunction* findFunction(const std::string& name) const;
+
+private:
+    std::vector<IRGlobal>                      m_globals;
+    std::vector<IRFunction>                    m_functions;
+    std::unordered_map<uint64_t, std::string>  m_addrToSymbol;
+}; 
+
+std::string toString(IRTypeKind k);
+std::string toString(Opcode op);
+std::string toString(IcmpCond c);
+std::string toString(FcmpCond c);
+std::string toString(CallingConv cc);
+
+void printIRInst(const IRInst& inst, int indent = 2);
+void printIRBlock(const IRBasicBlock& block);
+void printIRFunction(const IRFunction& fn);
+void printIRProgram(const IRProgram& program);
+
+// Verifier — non-SSA checks only:
+//   - every VReg used in an operand has an ID ≤ function's current counter
+//   - OR is one of the 16 reserved GPR IDs (0-15)
+//   - every block ends with exactly one terminator
+//   - branch targets name blocks that exist in the same function
+// Does NOT check single-definition, that is intentionally allowed.
+std::vector<std::string> verifyIR(const IRProgram& program);
+
+IRProgram liftX86ToIR(const ElfLoad::ElfLoadResult& elf);
 }
