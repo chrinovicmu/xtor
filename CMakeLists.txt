@@ -21,3 +21,7 @@ target_include_directories(instrax PRIVATE
 )
 
 target_link_libraries(instrax PRIVATE capstone)
+
+find_package(Zydis REQUIRED)
+target_link_libraries(xtor PRIVATE Zydis::Zydis)
+

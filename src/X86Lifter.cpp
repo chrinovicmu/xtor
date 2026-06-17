@@ -1,0 +1,329 @@
+
+#include "X86Lifter.hpp"
+
+#include <Zydis/Zydis.h>
+#include <elfio/elfio.hpp>
+
+#include <algorithm>
+#include <cassert>
+#include <map>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <unordered_map>
+
+//Describes one ELF symbol of interest (function or global object)
+struct SymbolInfo{
+    std::string name; 
+    uint64_t address; 
+    uint64_t size; 
+    unsigned char type; 
+    unsigned char binding; 
+}; 
+
+struct DecodedInstr{
+    uint64_t va; 
+    uint8_t length;
+    ZydisDecodedInstruction zydis; 
+
+}; 
+
+//x86-64 registers are aliased. we model all registers 
+//through thier 64-bit canonical form 
+static ZydisRegister canonicalReg(ZydisRegister reg) {
+    switch (reg) {
+        case ZYDIS_REGISTER_AL: case ZYDIS_REGISTER_AH:
+        case ZYDIS_REGISTER_AX: case ZYDIS_REGISTER_EAX:
+        case ZYDIS_REGISTER_RAX:                          
+            return ZYDIS_REGISTER_RAX;
+
+        case ZYDIS_REGISTER_BL: case ZYDIS_REGISTER_BH:
+        case ZYDIS_REGISTER_BX: case ZYDIS_REGISTER_EBX:
+        case ZYDIS_REGISTER_RBX:                          
+            return ZYDIS_REGISTER_RBX;
+
+        case ZYDIS_REGISTER_CL: case ZYDIS_REGISTER_CH:
+        case ZYDIS_REGISTER_CX: case ZYDIS_REGISTER_ECX:
+        case ZYDIS_REGISTER_RCX:                          
+            return ZYDIS_REGISTER_RCX;
+
+        case ZYDIS_REGISTER_DL: case ZYDIS_REGISTER_DH:
+        case ZYDIS_REGISTER_DX: case ZYDIS_REGISTER_EDX:
+        case ZYDIS_REGISTER_RDX:                          
+            return ZYDIS_REGISTER_RDX;
+
+        case ZYDIS_REGISTER_SIL: case ZYDIS_REGISTER_SI:
+        case ZYDIS_REGISTER_ESI: case ZYDIS_REGISTER_RSI: 
+            return ZYDIS_REGISTER_RSI;
+
+        case ZYDIS_REGISTER_DIL: case ZYDIS_REGISTER_DI:
+        case ZYDIS_REGISTER_EDI: case ZYDIS_REGISTER_RDI: 
+            return ZYDIS_REGISTER_RDI;
+
+        case ZYDIS_REGISTER_SPL: case ZYDIS_REGISTER_SP:
+        case ZYDIS_REGISTER_ESP: case ZYDIS_REGISTER_RSP: 
+            return ZYDIS_REGISTER_RSP;
+
+        case ZYDIS_REGISTER_BPL: case ZYDIS_REGISTER_BP:
+        case ZYDIS_REGISTER_EBP: case ZYDIS_REGISTER_RBP: 
+            return ZYDIS_REGISTER_RBP;
+
+        case ZYDIS_REGISTER_R8B:  case ZYDIS_REGISTER_R8W:
+        case ZYDIS_REGISTER_R8D:  case ZYDIS_REGISTER_R8: 
+            return ZYDIS_REGISTER_R8;
+
+        case ZYDIS_REGISTER_R9B:  case ZYDIS_REGISTER_R9W:
+        case ZYDIS_REGISTER_R9D:  case ZYDIS_REGISTER_R9:  
+            return ZYDIS_REGISTER_R9;
+
+        case ZYDIS_REGISTER_R10B: case ZYDIS_REGISTER_R10W:
+        case ZYDIS_REGISTER_R10D: case ZYDIS_REGISTER_R10: 
+            return ZYDIS_REGISTER_R10;
+
+        case ZYDIS_REGISTER_R11B: case ZYDIS_REGISTER_R11W:
+        case ZYDIS_REGISTER_R11D: case ZYDIS_REGISTER_R11: 
+            return ZYDIS_REGISTER_R11;
+
+        case ZYDIS_REGISTER_R12B: case ZYDIS_REGISTER_R12W:
+        case ZYDIS_REGISTER_R12D: case ZYDIS_REGISTER_R12: 
+            return ZYDIS_REGISTER_R12;
+
+        case ZYDIS_REGISTER_R13B: case ZYDIS_REGISTER_R13W:
+        case ZYDIS_REGISTER_R13D: case ZYDIS_REGISTER_R13: 
+            return ZYDIS_REGISTER_R13;
+
+        case ZYDIS_REGISTER_R14B: case ZYDIS_REGISTER_R14W:
+        case ZYDIS_REGISTER_R14D: case ZYDIS_REGISTER_R14: 
+            return ZYDIS_REGISTER_R14;
+
+        case ZYDIS_REGISTER_R15B: case ZYDIS_REGISTER_R15W:
+        case ZYDIS_REGISTER_R15D: case ZYDIS_REGISTER_R15: 
+            return ZYDIS_REGISTER_R15;
+
+        default: return reg; // XMM / segment / control regs — pass through
+    }
+}
+
+// Returns the IRType corresponding to the register's access width.
+static IRType typeOfReg(ZydisRegister reg) {
+
+    // 8-bit registers
+    switch (reg) {
+        case ZYDIS_REGISTER_AL:  case ZYDIS_REGISTER_AH:
+        case ZYDIS_REGISTER_BL:  case ZYDIS_REGISTER_BH:
+        case ZYDIS_REGISTER_CL:  case ZYDIS_REGISTER_CH:
+        case ZYDIS_REGISTER_DL:  case ZYDIS_REGISTER_DH:
+        case ZYDIS_REGISTER_SIL: case ZYDIS_REGISTER_DIL:
+        case ZYDIS_REGISTER_SPL: case ZYDIS_REGISTER_BPL:
+        case ZYDIS_REGISTER_R8B: case ZYDIS_REGISTER_R9B:
+        case ZYDIS_REGISTER_R10B: case ZYDIS_REGISTER_R11B:
+        case ZYDIS_REGISTER_R12B: case ZYDIS_REGISTER_R13B:
+        case ZYDIS_REGISTER_R14B: case ZYDIS_REGISTER_R15B:
+            return IRType::i8();
+
+        // 16-bit registers
+        case ZYDIS_REGISTER_AX:  case ZYDIS_REGISTER_BX:
+        case ZYDIS_REGISTER_CX:  case ZYDIS_REGISTER_DX:
+        case ZYDIS_REGISTER_SI:  case ZYDIS_REGISTER_DI:
+        case ZYDIS_REGISTER_SP:  case ZYDIS_REGISTER_BP:
+        case ZYDIS_REGISTER_R8W: case ZYDIS_REGISTER_R9W:
+        case ZYDIS_REGISTER_R10W: case ZYDIS_REGISTER_R11W:
+        case ZYDIS_REGISTER_R12W: case ZYDIS_REGISTER_R13W:
+        case ZYDIS_REGISTER_R14W: case ZYDIS_REGISTER_R15W:
+            return IRType::i16();
+
+        // 32-bit registers
+        case ZYDIS_REGISTER_EAX: case ZYDIS_REGISTER_EBX:
+        case ZYDIS_REGISTER_ECX: case ZYDIS_REGISTER_EDX:
+        case ZYDIS_REGISTER_ESI: case ZYDIS_REGISTER_EDI:
+        case ZYDIS_REGISTER_ESP: case ZYDIS_REGISTER_EBP:
+        case ZYDIS_REGISTER_R8D: case ZYDIS_REGISTER_R9D:
+        case ZYDIS_REGISTER_R10D: case ZYDIS_REGISTER_R11D:
+        case ZYDIS_REGISTER_R12D: case ZYDIS_REGISTER_R13D:
+        case ZYDIS_REGISTER_R14D: case ZYDIS_REGISTER_R15D:
+            return IRType::i32();
+
+        default:
+            // All 64-bit GPRs, XMM (modelled as i64 in this pass), etc.
+            return IRType::i64();
+    }
+}
+
+static std::string regName(ZydisRegister reg){
+    const char *s = ZydisRegisterGetString(reg); 
+    return s ? std::string(s) : "reg"; 
+}
+
+//  Iterates .symtab (and .dynsym as fallback) using ELFIO
+static std::vector<SymbolInfo> readSymbols(const ELFIO::elfio& reader) {
+    std::vector<SymbolInfo> result;
+
+    for (const auto& sec : reader.sections) {
+        // Only process symbol tables; skip everything else.
+        if (sec->get_type() != ELFIO::SHT_SYMTAB &&
+            sec->get_type() != ELFIO::SHT_DYNSYM)
+            continue;
+
+        ELFIO::symbol_section_accessor symtab(reader, sec.get());
+        ELFIO::Elf_Xword count = symtab.get_symbols_num();
+
+        for (ELFIO::Elf_Xword i = 0; i < count; ++i) {
+            std::string   name;
+            ELFIO::Elf64_Addr value   = 0;  
+            ELFIO::Elf_Xword  size    = 0;
+            unsigned char     bind    = 0;  // STB_LOCAL / GLOBAL 
+            unsigned char     type    = 0;  // STT_OBJECT / STT_FUNC
+            ELFIO::Elf_Half   shndx   = 0;  
+            unsigned char     other   = 0;  
+
+            symtab.get_symbol(i, name, value, size, bind, type, shndx, other);
+
+            if (shndx == ELFIO::SHN_UNDEF || name.empty()) continue;
+
+            // We only care about functions (STT_FUNC) and data objects
+            // (STT_OBJECT). Debug symbols, section symbols, etc. are skipped.
+            if (type != ELFIO::STT_FUNC && type != ELFIO::STT_OBJECT) continue;
+
+            result.push_back({name, value, size, type, bind});
+        }
+    }
+
+    // Sort by address so we can quickly find the next symbol boundary when
+    // a function's size field is zero
+    std::sort(result.begin(), result.end(),
+              [](const SymbolInfo& a, const SymbolInfo& b) {
+                  return a.address < b.address;
+              });
+    return result;
+}
+
+class X86Disassmbler{
+public: 
+    X86Disassmbler(){
+
+        ZydisDecoderInit(&m_decoder,
+                         ZYDIS_MACHINE_MODE_LONG_64, 
+                         ZYDIS_ADDRESS_WIDTH_64);
+    }
+
+    std::vector<DecodedInstr> disassemble(const uint8_t* data, 
+                                          size_t len, 
+                                          uint64_t baseVA) const{
+        std::vector<DecodedInstr> instrs; 
+        size_t offset = 0; 
+        
+        //Decode one instruction at a time 
+        while(offset < length){
+            DecodedInstr di; 
+            di.va = baseVA + offset;
+
+            ZyanStatus status = ZydisDecoderDecoderBuffer(
+                &m_decoder,
+                data + offset, 
+                length - offset, 
+                &di.Zydis);
+
+            if(!ZYAN_SUCCESS(status)){
+                di.length = 1; 
+                di.zydis.mnemonic = ZYDIS_MNEMONIC_NOP; 
+                di.zydis.length = 1; 
+                di.zydis.operand_count_visible =0; 
+                instr.push_back(di). 
+                offset += 1;
+                continue; 
+            }
+
+            di.length = static_cast<uint8_t>(di.zydis.length); 
+            instrs.push_back(di); 
+            offset + = di.length; 
+        }
+        return instrs; 
+    }
+
+private:
+    ZydisDecoder m_decoder; 
+
+}; 
+
+//CFG builder 
+//build basic blocks from a flat instrucion stream 
+class CFGBuilder{
+
+public: 
+
+    std::map<uint64_t, std::vector<DecodedInstr>>
+
+    buildCFG(const std::vector<DecodedInstr>& instrs) const{
+        
+        if(instrs.empty())
+            return {}; 
+
+        std::set<uint64_t> leaders; 
+        leaders.insert(instrs.front().va); 
+
+        for(size_t i = 0; i < instrs.size(); ++i){
+            const auto& di = instrs[i]; 
+
+            if(!isNotControlFlow(di)) 
+                continue; 
+
+            if(i + 1 < instrs.size())
+                leaders.insert(instrs[i + 1].va); 
+
+            uint64_t target = directTarget(di); 
+            if(target != 0)
+                leaders.insert(target); 
+        }
+
+        std::map<uint64_t, std::vector<DecodedInstr>> blocks;
+        uint64_t current = instrs.front().va; 
+        blocks[current]; 
+
+        if(const auto& di : instrs){
+            if(leaders.count(di.va) != 0 && di.va != current){
+                current = di.va;
+            }
+            blocks[current].push_back(di); 
+        }
+        return blocks; 
+    }
+
+private:
+    // Returns true if this instruction ends a straight-line sequence
+    // and may transfer control to a different address.
+    static bool isControlFlow(const DecodedInstr& di) {
+        switch (di.zydis.mnemonic) {
+            case ZYDIS_MNEMONIC_JMP:
+            case ZYDIS_MNEMONIC_CALL:
+            case ZYDIS_MNEMONIC_RET:  case ZYDIS_MNEMONIC_RETF:
+            // All conditional jumps (Jcc family)
+            case ZYDIS_MNEMONIC_JB:   case ZYDIS_MNEMONIC_JBE:
+            case ZYDIS_MNEMONIC_JL:   case ZYDIS_MNEMONIC_JLE:
+            case ZYDIS_MNEMONIC_JNB:  case ZYDIS_MNEMONIC_JNBE:
+            case ZYDIS_MNEMONIC_JNL:  case ZYDIS_MNEMONIC_JNLE:
+            case ZYDIS_MNEMONIC_JNO:  case ZYDIS_MNEMONIC_JNP:
+            case ZYDIS_MNEMONIC_JNS:  case ZYDIS_MNEMONIC_JNZ:
+            case ZYDIS_MNEMONIC_JO:   case ZYDIS_MNEMONIC_JP:
+            case ZYDIS_MNEMONIC_JS:   case ZYDIS_MNEMONIC_JZ:
+            case ZYDIS_MNEMONIC_LOOP: case ZYDIS_MNEMONIC_LOOPE:
+            case ZYDIS_MNEMONIC_LOOPNE:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    //Returns the direct brnach target virtual address (PC-relative immediate).
+    //or 0 if the target is indirect  
+    static uint64_t directTarget(const DecodedInstr& di){
+        for(uint8_t i = 0; < di.zydis.operand_count_visible; ++){
+            const auto& op = di.zydis.operands[i]; 
+            if(op.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && op.imm.is_relative){
+                return di.va + di.length + static_cast<uint64_t>(static_cast<int64>(op.imm.value.s)); 
+            }
+        }
+        return 0; 
+    }
+}
+
+
