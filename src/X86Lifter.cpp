@@ -149,6 +149,29 @@ static IRType typeOfReg(ZydisRegister reg) {
     }
 }
 
+static uint32_t gprVRegId(ZydisRegister canonReg) {
+    switch (canonReg) {
+        case ZYDIS_REGISTER_RAX: return 0;
+        case ZYDIS_REGISTER_RBX: return 1;
+        case ZYDIS_REGISTER_RCX: return 2;
+        case ZYDIS_REGISTER_RDX: return 3;
+        case ZYDIS_REGISTER_RSI: return 4;
+        case ZYDIS_REGISTER_RDI: return 5;
+        case ZYDIS_REGISTER_RSP: return 6;
+        case ZYDIS_REGISTER_RBP: return 7;
+        case ZYDIS_REGISTER_R8:  return 8;
+        case ZYDIS_REGISTER_R9:  return 9;
+        case ZYDIS_REGISTER_R10: return 10;
+        case ZYDIS_REGISTER_R11: return 11;
+        case ZYDIS_REGISTER_R12: return 12;
+        case ZYDIS_REGISTER_R13: return 13;
+        case ZYDIS_REGISTER_R14: return 14;
+        case ZYDIS_REGISTER_R15: return 15;
+        default:
+            return UINT32_MAX;   // untracked (XMM, segment, etc.)
+    }
+}
+
 static std::string regName(ZydisRegister reg){
     const char *s = ZydisRegisterGetString(reg); 
     return s ? std::string(s) : "reg"; 
@@ -326,4 +349,85 @@ private:
     }
 }
 
+//Translates one x86-64 function (as a CFG of DecodedInstr)
+class FunctionLifter{
+public:
 
+    FunctionLifter(const std::string name& name, 
+                   uint64_t baseVA, 
+                   CallingConv cc)
+        : m_fn(name, retType, cc), m_baseVA(baseVA) {}
+
+    IRFunction lift(const std::map<uint64_t,std::vector<DecodedInstr>>& cfgBlocks, 
+                    const IRProgram& program){
+
+        if(cfgBlocks.empty()) 
+            return std::move(m_fn); 
+
+        //reserve vector capacity 
+        m_fn.blocks().reserve(cfgBlocks.size()); 
+
+        //create all block labels. 
+        //create a label for each virtual address of each basicblock 
+        for(const auto& [va, _] : cfgBlocks)
+            m_blockNames[va] = makeLabel(va); 
+
+        //create all basic blocks upfront 
+        bool first = true; 
+        for (const auto& [va, _] : cfgBlocks){
+            m_fn.addBlock(IRBasicBlock(makeLabel(va), va));
+            (void)first; first = false; 
+        }
+
+
+
+    }
+
+private:
+    IRFunction m_fn; 
+    uint64_t m_baseVA; 
+
+    std::unordered_map<ZydisRegister, uint32_t> m_regslots; 
+
+    //maps basic block leader VA -> IR block label string
+    std::unordered_map<uint64_t, std::string> m_blockNames; 
+
+    struct PendingCmp {
+        bool valid = true; 
+        IRValue lhs = IRValue::makeImm(0, IRType::i64(); 
+        IRValue rhs = IRValue::makeImm(0, IRType::i64();
+        bool isTest = false; 
+    }
+    static std::string makeLabel(uint64_t va){
+        std::string ss; 
+        ss << "bb_0x" << std::hex << va; 
+        return ss.str(); 
+    }
+
+    //alocate temporary VReg (ID > 16)
+    uint32_t newTemp() {
+        return m_fn.allocVreg(); 
+    }
+
+
+    //Returns an IRValue referencing the GPR's fixed Vreg directly
+    IRValue readReg(ZydisRegister reg, IRBasicBlock block){
+        
+        ZydisRegister canon = canonicalReg(reg); 
+        uint32_t id = gprVRegId(canon);
+        IRType ty = typeOfReg(reg); 
+
+        if(id == UINT32_MAX)
+            return IRValue::makeImm(0, IRType::i64()); 
+
+        IRValue full = IRValue::makeVReg(id, IRType::i64(), regName(canon)); 
+
+        if(ty == IRType::i64())
+            return full; 
+
+        uint32_t truncID = newTemp(); 
+        block.pusInst
+    } 
+
+
+}
