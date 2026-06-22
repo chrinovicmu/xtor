@@ -425,9 +425,73 @@ private:
         if(ty == IRType::i64())
             return full; 
 
+        //sub-regsiter: emit TRUNC to narrow the value 
         uint32_t truncID = newTemp(); 
-        block.pusInst
+        block.pushInst(IRInst::makeCast(
+            Opcode::TRUNC, VReg(truncID, "sub_" + regName(reg)), ty, full));
+        return IRValue::makeVReg(truncID, ty); 
     } 
+
+    //Register write 
+    //emits a mov into a GPR's fixed Vreg 
+    //handles the threee partial-write semantics 
+    //64-bit: %rax = mov i64 val 
+    //32-bit: %rax, zext i32 val to i64
+    //8/16-bit:% - 
+
+    void writeReg(ZydisRegister reg, IRValue val, IRBasicBlock block){
+        ZydisRegister canon = canonicalReg(reg); 
+        uint32_t id = gprVRegId(canon); 
+        IRType TY = typeOfReg(reg); 
+
+        if(id == UINT32_MAX)
+            return; 
+
+        VReg gprVReg(id, regName(canon)); 
+        IRValue toStore = val; 
+
+        if(ty == IRType::i64()){
+            //full 64-bit write 
+            block.pushInst(IRInst::makeMov(gprVReg, IRType::i64(), val)); 
+
+        }else if (ty == IRType::i32()){
+            // 32-bit write zero-extends into 64 bits (x86-64 architectural rule).
+            // %t_z = zext i32 val to i64
+            // %rax = mov i64 %t_z
+            uint32_t zId = newTemp(); 
+            block.pushInst(IRInst::makeCast(
+                Opcode::ZEXT, VReg(zId, "zext32"), IRType::i64(), val)); 
+            block.pushInst(IRInst::makeMov(
+                gprVReg, IRType::i64(),
+                IRValue::makeVReg(zId, IRType::64())); 
+        }else{
+            // 8/16-bit partial write: read-modify-write to preserve upper bits.
+            // Read the current full register value.
+            IRValue cur = IRValue::makeVReg(id, IRType::i64(), regName(canon));
+
+            // Mask out the bits we are about to overwrite.
+            uint64_t width = static_cast<uint64_t>(ty.byteWidth()) * 8;
+            uint64_t mask  = ~((UINT64_C(1) << width) - 1);
+
+            uint32_t maskedId = newTemp();
+            block.pushInst(IRInst::makeBinop(
+                Opcode::AND, VReg(maskedId, "masked"), IRType::i64(),
+                cur,
+                IRValue::makeImm(static_cast<int64_t>(mask), IRType::i64())));
+
+            // Zero-extend the new value to 64 bits.
+            uint32_t zId = newTemp();
+            block.pushInst(IRInst::makeCast(
+                Opcode::ZEXT, VReg(zId, "zext_partial"), IRType::i64(), val));
+
+            // Merge and write back into the GPR VReg.
+            block.pushInst(IRInst::makeBinop(
+                Opcode::OR, gprVReg, IRType::i64(),
+                IRValue::makeVReg(maskedId, IRType::i64()),
+                IRValue::makeVReg(zId, IRType::i64())));
+        }
+    }
+
 
 
 }
