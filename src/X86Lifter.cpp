@@ -492,6 +492,71 @@ private:
         }
     }
 
+    //X86 Address computation 
+
+    IRValue computeAddr(const ZydisDecodedOperand& memOp, IRBasicBlock& block){
+
+        IRValue addr = IRValue::makeImm(0, IRType::i64()); 
+        bool hasAddr = false; 
+
+        //base register 
+        if(memOp.mem.base != ZYDIS_REGISTER_NONE && 
+           memOp.mem.base != ZYDIS_REGISTER_RIP){
+
+            //get IRValue to VReg ID 
+            addr = readReg(memOp.mem.base, block); 
+            hasAddr = true; 
+
+        }else if (memOp.mem.base == ZYDIS_REGISTER_RIP){
+            addr = IRValue::makeImm(memOp.mem.disp.value, IRValue::i64()); 
+            hasAddr = true; 
+        }
+
+        //index * scale 
+
+        if(memOp.mem.index != ZYDIS_REGISTER_NONE){
+            IRValue idx = readReg(memOp.mem.index, block); 
+
+            if(memOp.mem.scale > 1){
+                uint32_t sId = newTemp(); 
+                block.pushInst(IRInst::makeBinop(
+                    Opcode::MUL, VReg(sId, "idx_scaled"), IRType::i64(), 
+                    idx, IRValue::makeImm(memOp.mem.scale, IRValue::i64())));
+                idx = IRValue::makeVReg(sId, IRType::i64()); 
+            }
+
+            //base + scaled index 
+            uint32_t aId = newTemp(); 
+            block.pushInst(IRInst::makeBinop(
+                Opcode::ADD, VReg(aId, "addr_idx"), IRType::i64(), 
+                hasAddr ? addr : IRValue::makeImm(0, IRType::i64()), idx)); 
+            addr = IRValue::makeVReg(aId, IRType::i64()); 
+            hasAddr = true 
+        }
+
+        //displacement 
+        if(memOp.mem.disp.has_displacement && memOp.mem.disp.value != 0){
+            uint32_t dId = newTemp(); 
+            block.pushInst(IRInst::makeBinop(
+                Opcode::ADD, VReg(dId, "addr_disp"), IRType::i64(),
+                hasAddr ? addr : IRType::makeImm(0, IRType::i64()), 
+                IRValue::makeImm(memOp.mem.disp.value, IRType::i64()))); 
+            addr = IRValue::makeVReg(dId, IRType::i64()); 
+            hasAddr = true; 
+        }
+
+        //cast integer address to pointer 
+        uint32_t pId = newTemp(); 
+        block.pushInst(IRInst::makeCast(
+            Opcode::INTTOPTR, VReg(pId, "mem_ptr"), IRType::ptr(), 
+            hasAddr ? addr : IRValue::makeImm(0, IRType::i64()))); 
+
+        return IRValue::makeVReg(pId, IRType::ptr()); 
+    }
+
+
+
+
 
 
 }
