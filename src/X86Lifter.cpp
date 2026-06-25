@@ -554,9 +554,56 @@ private:
         return IRValue::makeVReg(pId, IRType::ptr()); 
     }
 
+    /*read any source operand and return a typed IRValue
+     * typHint is used for immediates  */ 
+    IRValue readOperand(const ZydisDecodedOperand& op,
+                        IRBasicBlock& block, 
+                        IRType TypeHint = IRType::i64(){
 
+        switch(op.type){
 
+            case ZYDIS_OPERAND_TYPE_REGISTER:
+                return readReg(op.reg.value, block);
 
+            case ZYDIS_OPERAND_TYPE_IMMEDIATE:
+                return IRValue::makeImm(op.imm.is_signed 
+                                        ? op.imm.value.s
+                                        : static_cast<int64>(op.imm.value.u.),
+                                        TypeHint); 
+            
+            /*x86's  CISC encoding let's add, eax, [rabx+8] express cpmputeaddr,
+             * then add as a single instrucion, 
+             * RISC-V and the IR has no such fused instrucion. the lifter has to explicrly unfuse it*/ 
+            case ZYDIS_OPERAND_TYPE_MEMORY: {
 
+                IRValue ptr = computeAddr(op, block); 
+                uint32_t lId = newTemp(); 
+                block.pushInst(IRInst::makeLoad(VReg(lId, "mem_load"), 
+                                                TypeHint, ptr, MemFlags(1))); 
+                return IRValue::makeVReg(lId, hint);
+            }
+            default:
+                return IRValue::makeImm(0, IRType::i64()); 
+        }
+    }
 
+    void writeOperand(const ZydisDecodedOperand& op, 
+                      IRValue val , 
+                      IRBasicBlock& block){
+
+        switch(op.type){
+
+            case ZYDIS_OPERAND_TYPE_REGISTER:
+                writeReg(op.reg.value, val, block); 
+                break; 
+
+            case ZYDIS_OPERAND_TYPE_MEMORY: {
+                IRValue ptr = computeAddr(op, block); 
+                block.pushInst(IRInst::makeStore(val, ptr, MemFlags(1))); 
+                break; 
+            } 
+
+            default: break; 
+        }
+    }
 }
