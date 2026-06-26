@@ -442,7 +442,7 @@ private:
     void writeReg(ZydisRegister reg, IRValue val, IRBasicBlock block){
         ZydisRegister canon = canonicalReg(reg); 
         uint32_t id = gprVRegId(canon); 
-        IRType TY = typeOfReg(reg); 
+        IRType ty = typeOfReg(reg); 
 
         if(id == UINT32_MAX)
             return; 
@@ -604,6 +604,160 @@ private:
             } 
 
             default: break; 
+        }
+    }
+
+    //Maps the zydis mnemonic of a conditional jump to the 
+    //corresponding IcmpCond that should be emmited 
+
+    static std::optional<IcmpCond> jccCond(ZydisMnemonic m) {
+        switch (m) {
+            case ZYDIS_MNEMONIC_JZ:   return IcmpCond::EQ;   // JE  — equal / zero
+            case ZYDIS_MNEMONIC_JNZ:  return IcmpCond::NE;   // JNE — not equal
+            case ZYDIS_MNEMONIC_JL:   return IcmpCond::SLT;  // signed 
+            case ZYDIS_MNEMONIC_JLE:  return IcmpCond::SLE;  // signed <=
+            case ZYDIS_MNEMONIC_JNL:  return IcmpCond::SGE;  // signed >=
+            case ZYDIS_MNEMONIC_JNLE: return IcmpCond::SGT;  // signed >
+            case ZYDIS_MNEMONIC_JB:   return IcmpCond::ULT;  // unsigned < (below)
+            case ZYDIS_MNEMONIC_JBE:  return IcmpCond::ULE;  // unsigned <=
+            case ZYDIS_MNEMONIC_JNB:  return IcmpCond::UGE;  // unsigned >=
+            case ZYDIS_MNEMONIC_JNBE: return IcmpCond::UGT;  // unsigned > (above)
+            // JS/JNS test the sign flag. Map to "< 0" / ">= 0" as a best
+            // approximation — exact semantics would need a full flags model.
+            case ZYDIS_MNEMONIC_JS:   return IcmpCond::SLT;
+            case ZYDIS_MNEMONIC_JNS:  return IcmpCond::SGE;
+            default:                  return std::nullopt;
+        }
+    }
+
+    void liftBlock(uint64_t leaderVA, 
+                   const std::vector<DecodedInstr>& instrs, 
+                   size_t blockIdx,  
+                   const IRProgram program){
+
+        IRBasicBlock& blocks = m_fn.blocks()[blockIdx]; 
+
+        for(const auto& di : instrs){
+
+        }
+    }
+
+
+    //  INSTRUCTION LIFTING
+    //
+    //  The main dispatch table. Each case handles one mnemonic
+    //  (or mnemonic family) and emits the corresponding IR.
+    //  Unrecognised instructions become NOPs tagged with their
+    //  source VA so they're easy to find and implement later.
+
+    void liftInstr(const DecodedInstr& di, 
+                   IRBasicBlock& block,
+                   const IRProgram program){
+
+        const ZydisDecodedInstruction& z = di.zydis; 
+        const ZydisDecodedOperand* ops = z.operands; 
+
+        switch(z.mnemonic){
+
+            //NOP 
+            case ZYDIS_MNEMONIC_NOP:
+                block.pushInst(IRInst::makeNop()); 
+                brea; 
+
+            //MOV dst, src 
+            case ZYDIS_MNEMONIC_MOV:
+                IRType dstTy; 
+                if(ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER){
+                    //Register destination: width is whatever the register alias is 
+                    dstTy = typeOfReg(ops[0].reg.value); 
+
+                }else if(ops[0].type == ZYDIS_OPERAND_TYPE_MEMORY && 
+                    ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER){
+                    //Memory destination, regsiter source: store must
+                    //match the source register width
+
+                    dstTy = typeOfReg(ops[1].reg.value); 
+
+                }else{
+                    //Memory destination, immediate source. 
+                    //use immediate encoded size 
+                    switch(ops[1].size){
+                        case 8:  dstTy = IRType::i8();  break; 
+                        case 16: dstTy = IRType::i16(); break; 
+                        case 32: dstTy = IRType::i32(); break; 
+                        default: dstTy = IRType::i64(); break; 
+                    }
+                }
+                IRValue src = readOperand(ops[1], block, dstTy); 
+                writeOperand(ops[0], src, block); 
+
+            //MOVZ dst, src (zero-extending mov)
+            //widens src to a larger register, filing upper bits with 0 
+            case ZYDIS_MNEMONIC_MOVZX:
+                IRType srcTy; 
+
+                if(ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER){
+                    srcTy = typeOfReg(ops[1].reg.value); 
+                }else{
+                    //Memory source 
+                    //movzx eax, word [rbx], loads 2 bytes  
+                    switch(ops[1].size){
+                        case 8:  srcTy = IRType::i8();  break; 
+                        case 16: srcTy = IRType::i16(); break; 
+                        case 32: srcTy = IRType::i32(); break;
+                        default: srcTy = IRType::i8();  break; 
+                    }
+                }
+                IRType dstTy = typeOfReg(ops[0].reg.value); 
+                
+                IRValue src = readOperand(ops[1], block, srcTy); 
+                uint32_t id = newTemp(); 
+                block.pushInst(IRInst::makeCast(
+                    Opcode::ZEXT, VReg(id, "movzx"), dstTy, src));
+                writeReg(ops[0].reg.value, IRValue::makeVReg(id, dstTy), block); 
+                break;
+            
+            // MOVSX / MOVSXD dst, src  (sign-extending move) 
+            // Like MOVZX but replicates the sign bit into upper bits.
+            case ZYDIS_MNEMONIC_MOVSX:
+            case ZYDIS_MNEMONIC_MOVSXD: 
+                IRType srcTy; 
+
+                if(ops[1].type == ZYDIS_OPERAND_TYPE_REGISTER){
+                    srcTy = typeOfReg(ops[1].reg.value); 
+                }else{
+                    switch(ops[1].size){
+                        case 8:  srcTy = IRType::i8();  break; 
+                        case 16: srcTy = IRType::i16(); break; 
+                        case 32: srcTy = IRType::i32(); break; 
+                        default: srcTy = IRType::i8(); 
+                    }
+                } 
+                IRType dstTy = typeOfReg(ops[0].reg.value); 
+                uint32_t id = newTemp(); 
+
+                block.pushInst(IRInst::makeCast(
+                    Opcode::SEXT, VReg(id, "movsx"), dstTy, src)); 
+                writeReg(ops[0].reg.value, IRValue::makeVReg(id, dstTy), block); 
+                break;
+
+            //LEA dst, [addr]
+            case ZYDIS_MNEMONIC_LEA:{
+                IRValue addrPtr = computeAddr(ops[1], block); 
+                uint32_t id = newTemp(); 
+                block.pushInst(IRInst::makeCast(
+                    Opcode::PTRTOINT, VReg(id, "lea"), IRType::i16(), addPtr)); 
+                writeReg(ops[0].reg.value, IRValue::makeVReg(id, IRType::i64()), block); 
+                break; 
+            }
+
+            case ZYDIS_MNEMONIC_ADD:
+            case ZYDIS_MNEMONIC_SUB:
+                
+                Opcode op = (z.mnemonic == ZYDIS_MNEMONIC_ADD) 
+                            ? Opcode::ADD : Opcode::SUB; 
+
+                IRType ty = (ops[0].type)
         }
     }
 }
