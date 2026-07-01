@@ -757,7 +757,24 @@ private:
                 Opcode op = (z.mnemonic == ZYDIS_MNEMONIC_ADD) 
                             ? Opcode::ADD : Opcode::SUB; 
 
-                IRType ty = (ops[0].type)
+                IRType ty = (ops[0].type == ZYDIS_OPERAND_TYPE_REGISTER) 
+                            ? typeOfReg(ops[0].reg.value) : IRType::i64(); 
+
+                IRValue lhs = readOperand(ops[0], block, ty); 
+                IRValue rhs = readOperand(ops[1], block, ty); 
+
+                uint32_t id = newTemp(); 
+
+                block.pushInst(IRInst::makeBinop(
+                    op, VReg(id, op == Opcode::ADD ? "add" : "sub"), ty, lsh, rhs)); 
+                writeOperand(ops[0], IRValue::makeVReg(id, ty), block);
+                break;
+
+            //signed multiply 
+            case ZYDIS_MNEMONIC_IMUL:
+                
+                
+
         }
     }
-}
+
